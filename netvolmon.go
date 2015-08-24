@@ -21,8 +21,6 @@ import (
 	"os"
 	"sort"
 	"time"
-
-	"github.com/ryanuber/go-glob"
 )
 
 // A DevStat represents a moment in time snapshot of a network device's
@@ -137,45 +135,6 @@ func printDelta(devname string, dt DevDelta) {
 		bwUnits,
 		float64(dt.RPackets)/persec,
 		float64(dt.TPackets)/persec)
-}
-
-func expandDevList(devices []string, oldst Stats) []string {
-	nk := make(map[string]bool)
-	devs := make([]string, len(oldst))
-	i := 0
-	for k := range oldst {
-		devs[i] = k
-		i ++
-	}
-
-	//
-	for _, k := range devices {
-		_, ok := oldst[k]
-		if ok {
-			nk[k] = true
-			continue
-		}
-		matched := false
-		for _, dev := range devs {
-			if glob.Glob(k, dev) {
-				matched = true
-				nk[dev] = true
-			}
-		}
-		if !matched {
-			log.Fatalf("device specifier '%s' doesn't seem to exist or match anything", k)
-		}
-	}
-
-	// ...
-	keys := make([]string, len(nk))
-	i = 0
-	for k := range nk {
-		keys[i] = k
-		i++
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 func processLoop(devices []string) {

@@ -17,6 +17,7 @@ package main
 import (
 	"log"
 	"net"
+	"os"
 
 	"github.com/ryanuber/go-glob"
 )
@@ -133,6 +134,55 @@ func cidrIPMatch(devpat string, ipmap ipMap, tgt set) bool {
 	return matched
 }
 
+// Match 'me' and try to translate it to an IP address via host lookup,
+// then find the IP address(es) in our devices.
+// TODO: try to pick one primary address? That gets complicated.
+func matchMe(devpat string, ipmap ipMap, tgt set) bool {
+	if devpat != "me" {
+		return false
+	}
+	hn, err := os.Hostname()
+	if err != nil {
+		return false
+	}
+	addrs, err := net.LookupHost(hn)
+	if err != nil {
+		return false
+	}
+	matched := false
+	for _, a := range addrs {
+		if v, ok := ipmap[a]; ok {
+			tgt.addlist(v)
+			matched = true
+		}
+	}
+	return matched
+}
+
+func matchNetNames(devpat string, ipmap ipMap, tgt set) bool {
+	if cidr, ok := cslabNetNames[devpat]; ok {
+		return cidrIPMatch(cidr, ipmap, tgt)
+	}
+	if slist, ok := cslabMultiNames[devpat]; ok {
+		// we match if any one of the multi-name matched,
+		// so we can have entries like 'blue' for 'net3 and/or
+		// net5'.
+		matched := false
+		for _, name := range slist {
+			cidr, ok := cslabNetNames[name]
+			if !ok {
+				// TODO: really this is a fatal error
+				return false
+			}
+			if cidrIPMatch(cidr, ipmap, tgt) {
+				matched = true
+			}
+		}
+		return matched
+	}
+	return false
+}
+
 // expandDevList takes a list of network device names from the command
 // line, plus the starting stats structure, and attempts to find actual
 // network device names for all of the arguments. It does various sorts
@@ -141,7 +191,7 @@ func cidrIPMatch(devpat string, ipmap ipMap, tgt set) bool {
 // BUGS: we assume the network device name list from oldst matches the
 // network device names that net.Interfaces() will return in Interfaces
 // structures.
-func expandDevList(devices []string, oldst Stats) []string {
+func expandDevList(devices []string, oldst Stats, exlist []string) []string {
 	// We cannot simply put matching devices in a list, because
 	// multiple command line arguments may match an overlapping
 	// set of devices and we don't want repeated device names.
@@ -169,7 +219,11 @@ func expandDevList(devices []string, oldst Stats) []string {
 		//
 		// All matchers return 'true' if they match something,
 		// 'false' otherwise. First one to hit wins.
-		if globMatch(k, devs, nk) ||
+		//
+		// We deliberately start out with our special magic
+		// matches.
+		if matchMe(k, ipmap, nk) || matchNetNames(k, ipmap, nk) ||
+			globMatch(k, devs, nk) ||
 			ipMatch(k, ipmap, nk) ||
 			cidrIPMatch(k, ipmap, nk) ||
 			globIPMatch(k, ipmap, nk) {
@@ -181,6 +235,9 @@ func expandDevList(devices []string, oldst Stats) []string {
 	}
 
 	// Turn our 'nk' set of matched network device names into a
-	// sorted list.
+	// sorted list, first removing excluded devices.
+	for _, k := range exlist {
+		nk.remove(k)
+	}
 	return nk.members()
 }

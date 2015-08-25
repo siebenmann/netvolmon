@@ -22,6 +22,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -36,6 +37,10 @@ func (s set) addlist(lst []string) {
 	for _, k := range lst {
 		s.add(k)
 	}
+}
+
+func (s set) remove(dev string) {
+	delete(s, dev)
 }
 
 func (s set) members() []string {
@@ -145,7 +150,14 @@ func genDeltas(oldinfo, newinfo Stats) Deltas {
 	d := make(Deltas)
 	for devname, nv := range newinfo {
 		// Skip interfaces that seem to be totally inactive.
-		if nv.RBytes == 0 && nv.TBytes == 0 {
+		// Our standard for 'totally inactive' is no bytes
+		// received, because systems can try to send stuff
+		// out on dead interfaces for reasons.
+		//
+		// It isn't sufficient to check the interface's
+		// FlagUp, because we can have up but totally
+		// inactive interfaces.
+		if nv.RBytes == 0 {
 			continue
 		}
 		ov, ok := oldinfo[devname]
@@ -214,7 +226,7 @@ func setupLoopbacks() {
 	}
 }
 
-func processLoop(devices []string) {
+func processLoop(devices []string, report bool, exlist []string) {
 	var keys []string
 
 	oldst := make(Stats)
@@ -223,12 +235,54 @@ func processLoop(devices []string) {
 		log.Fatal("error on initial filling: ", e)
 	}
 
-	if len(devices) > 0 {
-		keys = expandDevList(devices, oldst)
-	}
-
 	// We assume that loopback devices do not appear dynamically.
 	setupLoopbacks()
+
+	excludes := make(set)
+	excludes.addlist(exlist)
+
+	if len(devices) > 0 {
+		keys = expandDevList(devices, oldst, exlist)
+
+		// With -x/-P, we might wind up eliminating all devices
+		// to monitor. We'd better check that explicitly.
+		if len(keys) == 0 {
+			log.Fatal("wound up with no devices to monitor!")
+		}
+	} else {
+		// set up keys for the report flag
+		// we must filter inactive devices by hand.
+		// TODO: this is probably a code smell
+		// Make it a DevStat method?
+		keys = make([]string, 0, len(oldst))
+		for k, v := range oldst {
+			if (v.RBytes == 0) ||
+				(!incLo && loopbacks.isin(k)) ||
+				excludes.isin(k) {
+				continue
+			}
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+
+		// excludes can theoretically take out all active
+		// network devices even in the 'monitor it all' case.
+		// in theory we could have a new network device appear;
+		// in practice, well, we error out here.
+		if len(keys) == 0 {
+			log.Fatal("wound up with no devices to monitor!")
+		}
+	}
+
+	// Report on what devices we'd use.
+	if report {
+		fmt.Printf("netvolmon: devices would be:")
+		for _, k := range keys {
+			fmt.Printf(" %s", k)
+		}
+		fmt.Printf("\n")
+		return
+	}
 
 	for {
 		time.Sleep(duration)
@@ -252,6 +306,9 @@ func processLoop(devices []string) {
 			if !incLo && loopbacks.isin(k) {
 				continue
 			}
+			if excludes.isin(k) {
+				continue
+			}
 
 			// We might not have stats for some device
 			// specified on the command line (perhaps
@@ -270,25 +327,42 @@ func processLoop(devices []string) {
 	}
 }
 
+var noteStr = `
+Default is to report on all network devices that have received traffic.
+
+Network device names can include shell glob patterns (eg 'enp*f*'),
+interface IP addresses, wildcarded IP addresses (eg '127.*'), CIDR
+netblocks (match any interface with an address in the netblock) and a
+few special names like 'me' (which tries to do an IP address lookup on
+the hostname and go from there).
+`
+
 func usage() {
 	fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
 	fmt.Fprintf(os.Stderr, "\t%s [options] [network-dev [network-dev ...]] [seconds]\n", os.Args[0])
 	fmt.Fprintf(os.Stderr, "\nOptions:\n")
 	flag.PrintDefaults()
-	fmt.Fprintf(os.Stderr, "\nDefault is to report on all network devices that have seen traffic.\nNetwork device names can include glob patterns, eg 'enp*f*'.\n")
+	fmt.Fprintf(os.Stderr, noteStr)
 }
 
 func main() {
 	var usekb bool
+	var report bool
+	var exclude string
+	var noPtP bool
 
 	log.SetPrefix("netvolmon: ")
 	log.SetFlags(0)
 
-	flag.BoolVar(&incLo, "l", false, "don't report on 'lo' device")
-	flag.BoolVar(&showTimestamp, "T", false, "show timestamps")
-	flag.BoolVar(&showZero, "z", false, "show devices with no activity this period")
+	flag.BoolVar(&incLo, "l", false, "when reporting on everything, report on loopback too")
+	flag.BoolVar(&showTimestamp, "T", false, "include timestamps in output")
+	flag.BoolVar(&showZero, "z", false, "show devices even if they have no activity this period")
 	flag.DurationVar(&duration, "d", time.Second, "`delay` between reports")
 	flag.BoolVar(&usekb, "k", false, "report in KB/s instead of MB/s")
+	flag.BoolVar(&report, "R", false, "just report what devices we'd monitor")
+	// TODO: this is kind of a hack.
+	flag.StringVar(&exclude, "x", "", "`devices` to specifically exclude (comma-separated)")
+	flag.BoolVar(&noPtP, "P", false, "exclude all point to point devices")
 
 	flag.Usage = usage
 	flag.Parse()
@@ -302,8 +376,10 @@ func main() {
 	// interpreted as a duration in seconds.
 	args := flag.Args()
 	if len(args) > 0 {
-		l := len(args)-1
-		dur, ok := strconv.ParseUint(args[l], 0, 32)
+		l := len(args) - 1
+		// We don't bother trying to limit the size of the
+		// duration via the #-of-bits argument here.
+		dur, ok := strconv.ParseUint(args[l], 0, 64)
 		if ok == nil && dur > 0 {
 			duration = time.Second * time.Duration(dur)
 			args = args[:l]
@@ -314,5 +390,19 @@ func main() {
 		incLo = true
 	}
 
-	processLoop(args)
+	exlist := strings.Split(exclude, ",")
+	// TODO: all of this hackery around various sorts of
+	// exclusions is a code smell.
+	if noPtP {
+		ints, err := net.Interfaces()
+		if err == nil {
+			for _, int := range ints {
+				if (int.Flags & net.FlagPointToPoint) > 0 {
+					exlist = append(exlist, int.Name)
+				}
+			}
+		}
+	}
+
+	processLoop(args, report, exlist)
 }

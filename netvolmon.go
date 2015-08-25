@@ -18,10 +18,44 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"sort"
+	"strconv"
 	"time"
 )
+
+// low rent sets of strings.
+type set map[string]struct{}
+
+func (s set) add(dev string) {
+	s[dev] = struct{}{}
+}
+
+func (s set) addlist(lst []string) {
+	for _, k := range lst {
+		s.add(k)
+	}
+}
+
+func (s set) members() []string {
+	keys := make([]string, len(s))
+	i := 0
+	for k := range s {
+		keys[i] = k
+		i++
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func (s set) isin(name string) bool {
+	_, ok := s[name]
+	return ok
+}
+
+//
+//
 
 // A DevStat represents a moment in time snapshot of a network device's
 // current statistics.
@@ -31,6 +65,7 @@ type DevStat struct {
 	TBytes   uint64
 	RPackets uint64
 	TPackets uint64
+	// TODO: error stats?
 }
 
 // A DevDelta represents the difference between two DevStats. It has
@@ -78,6 +113,29 @@ type Stats map[string]DevStat
 // Deltas represents the delta between two device stats, one entry per device
 type Deltas map[string]DevDelta
 
+// oh for generic functions. this is cut and paste but that's life.
+func (s Stats) members() []string {
+	keys := make([]string, len(s))
+	i := 0
+	for k := range s {
+		keys[i] = k
+		i++
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func (d Deltas) members() []string {
+	keys := make([]string, len(d))
+	i := 0
+	for k := range d {
+		keys[i] = k
+		i++
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // Generate a set of deltas between two Stats. Devices can appear and
 // disappear; only devices that are in both Stats are included in the
 // deltas. We skip any devices that appear to have had counter overflow
@@ -102,6 +160,8 @@ func genDeltas(oldinfo, newinfo Stats) Deltas {
 	return d
 }
 
+//
+//
 const (
 	kB = 1024
 	mB = kB * 1024
@@ -111,10 +171,13 @@ const (
 	HMS = "15:04:05"
 )
 
-var showTimestamp = true
-var showZero = true
-var incLo = false
-var duration = time.Second
+// network devices that are loopback devices.
+var loopbacks set
+
+var showTimestamp bool
+var showZero bool
+var incLo bool
+var duration time.Duration
 
 var bwUnits = "MB/s"
 var bwDiv = mB
@@ -124,6 +187,7 @@ var bwDiv = mB
 func printDelta(devname string, dt DevDelta) {
 	persec := float64(dt.Delta) / float64(time.Second)
 	persecbytes := persec * float64(bwDiv)
+
 	if showTimestamp {
 		fmt.Printf("%-8s %8s ", devname, dt.When.Format(HMS))
 	} else {
@@ -135,6 +199,19 @@ func printDelta(devname string, dt DevDelta) {
 		bwUnits,
 		float64(dt.RPackets)/persec,
 		float64(dt.TPackets)/persec)
+}
+
+func setupLoopbacks() {
+	loopbacks = make(set)
+	ints, e := net.Interfaces()
+	if e != nil {
+		return
+	}
+	for idx := range ints {
+		if (ints[idx].Flags & net.FlagLoopback) > 0 {
+			loopbacks.add(ints[idx].Name)
+		}
+	}
 }
 
 func processLoop(devices []string) {
@@ -150,6 +227,9 @@ func processLoop(devices []string) {
 		keys = expandDevList(devices, oldst)
 	}
 
+	// We assume that loopback devices do not appear dynamically.
+	setupLoopbacks()
+
 	for {
 		time.Sleep(duration)
 		newst := make(Stats)
@@ -160,24 +240,27 @@ func processLoop(devices []string) {
 
 		dt := genDeltas(oldst, newst)
 
+		// Without explicit devices specified, we report on
+		// whatever is available on each iteration. This may
+		// include newly appearing devices, which is why we
+		// don't precalculate the keys list.
 		if len(devices) == 0 {
-			keys = make([]string, len(dt))
-			i := 0
-			for k := range dt {
-				keys[i] = k
-				i++
-			}
-			sort.Strings(keys)
+			keys = dt.members()
 		}
 
 		for _, k := range keys {
-			if !incLo && k == "lo" {
+			if !incLo && loopbacks.isin(k) {
 				continue
 			}
+
+			// We might not have stats for some device
+			// specified on the command line (perhaps
+			// it disappeared).
 			v, ok := dt[k]
 			if !ok {
 				continue
 			}
+
 			if !showZero && v.RBytes == 0 && v.TBytes == 0 {
 				continue
 			}
@@ -189,7 +272,7 @@ func processLoop(devices []string) {
 
 func usage() {
 	fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
-	fmt.Fprintf(os.Stderr, "\t%s [options] [network-dev [network-dev ...]]\n", os.Args[0])
+	fmt.Fprintf(os.Stderr, "\t%s [options] [network-dev [network-dev ...]] [seconds]\n", os.Args[0])
 	fmt.Fprintf(os.Stderr, "\nOptions:\n")
 	flag.PrintDefaults()
 	fmt.Fprintf(os.Stderr, "\nDefault is to report on all network devices that have seen traffic.\nNetwork device names can include glob patterns, eg 'enp*f*'.\n")
@@ -214,9 +297,22 @@ func main() {
 		bwUnits = "KB/s"
 		bwDiv = kB
 	}
-	if flag.NArg() > 0 {
+
+	// Very special hack: a single trailing integer argument is
+	// interpreted as a duration in seconds.
+	args := flag.Args()
+	if len(args) > 0 {
+		l := len(args)-1
+		dur, ok := strconv.ParseUint(args[l], 0, 32)
+		if ok == nil && dur > 0 {
+			duration = time.Second * time.Duration(dur)
+			args = args[:l]
+		}
+	}
+
+	if len(args) > 0 {
 		incLo = true
 	}
 
-	processLoop(flag.Args())
+	processLoop(args)
 }

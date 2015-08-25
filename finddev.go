@@ -17,7 +17,6 @@ package main
 import (
 	"log"
 	"net"
-	"sort"
 
 	"github.com/ryanuber/go-glob"
 )
@@ -25,12 +24,12 @@ import (
 // Match a glob pattern against the names of network devices.
 // We take the target map to add entries to because we may match multiple
 // entries. In fact that's kind of the default case.
-func globMatch(devpat string, netdevs []string, tgt map[string]bool) bool {
+func globMatch(devpat string, netdevs []string, tgt set) bool {
 	matched := false
 	for _, dev := range netdevs {
 		if glob.Glob(devpat, dev) {
 			matched = true
-			tgt[dev] = true
+			tgt.add(dev)
 		}
 	}
 	return matched
@@ -51,13 +50,6 @@ func (i ipMap) add(ip, netdev string) {
 		i[ip] = append(v, netdev)
 	} else {
 		i[ip] = []string{netdev}
-	}
-}
-
-// BAD INTERFACE: add all the devices for ip to tgt.
-func (i ipMap) growtgt(ip string, tgt map[string]bool) {
-	for _, v := range i[ip] {
-		tgt[v] = true
 	}
 }
 
@@ -96,14 +88,13 @@ func getNetworks() ipMap {
 // eg '127.0.0.1' -> 'lo'
 // This will always only match a single ipmap entry, but that entry
 // might have multiple devices associated with it.
-func ipMatch(devpat string, ipmap ipMap, tgt map[string]bool) bool {
+func ipMatch(devpat string, ipmap ipMap, tgt set) bool {
 	ip := net.ParseIP(devpat)
 	if ip == nil {
 		return false
 	}
-	_, ok := ipmap[ip.String()]
-	if ok {
-		ipmap.growtgt(ip.String(), tgt)
+	if v, ok := ipmap[ip.String()]; ok {
+		tgt.addlist(v)
 		return true
 	}
 	return false
@@ -112,12 +103,12 @@ func ipMatch(devpat string, ipmap ipMap, tgt map[string]bool) bool {
 // globIPMatch is given an IP address glob and matches it against the
 // IP addresses associated with network devices, adding all that match.
 // eg '127.*' -> 'lo'
-func globIPMatch(devpat string, ipmap ipMap, tgt map[string]bool) bool {
+func globIPMatch(devpat string, ipmap ipMap, tgt set) bool {
 	matched := false
-	for k := range ipmap {
+	for k, v := range ipmap {
 		if glob.Glob(devpat, k) {
 			matched = true
-			ipmap.growtgt(k, tgt)
+			tgt.addlist(v)
 		}
 	}
 	return matched
@@ -126,16 +117,16 @@ func globIPMatch(devpat string, ipmap ipMap, tgt map[string]bool) bool {
 // cidrIPMatch is given a CIDR and matches it against the IP addresses
 // associated with network devices, adding all that match.
 // eg '127.0.0.0/8' -> 'lo'.
-func cidrIPMatch(devpat string, ipmap ipMap, tgt map[string]bool) bool {
+func cidrIPMatch(devpat string, ipmap ipMap, tgt set) bool {
 	matched := false
 	_, cidr, err := net.ParseCIDR(devpat)
 	if err != nil {
 		return false
 	}
-	for k := range ipmap {
+	for k, v := range ipmap {
 		ip := net.ParseIP(k)
 		if cidr.Contains(ip) {
-			ipmap.growtgt(k, tgt)
+			tgt.addlist(v)
 			matched = true
 		}
 	}
@@ -154,19 +145,11 @@ func expandDevList(devices []string, oldst Stats) []string {
 	// We cannot simply put matching devices in a list, because
 	// multiple command line arguments may match an overlapping
 	// set of devices and we don't want repeated device names.
-	// So we must put them in a set (here a string->bool map)
+	// So we must put them in a set (here a string-based map)
 	// and then turn them into an array at the end.
-	nk := make(map[string]bool)
+	nk := make(set)
 
-	// Create a list of the known network device names, based on
-	// the keys of the Stats map.
-	devs := make([]string, len(oldst))
-	i := 0
-	for k := range oldst {
-		devs[i] = k
-		i++
-	}
-
+	devs := oldst.members()
 	ipmap := getNetworks()
 
 	// Try multiple strategies to find network devices for each
@@ -176,7 +159,7 @@ func expandDevList(devices []string, oldst Stats) []string {
 		// we try to match in the stats map.
 		_, ok := oldst[k]
 		if ok {
-			nk[k] = true
+			nk.add(k)
 			continue
 		}
 
@@ -199,12 +182,5 @@ func expandDevList(devices []string, oldst Stats) []string {
 
 	// Turn our 'nk' set of matched network device names into a
 	// sorted list.
-	keys := make([]string, len(nk))
-	i = 0
-	for k := range nk {
-		keys[i] = k
-		i++
-	}
-	sort.Strings(keys)
-	return keys
+	return nk.members()
 }

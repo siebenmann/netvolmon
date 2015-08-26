@@ -45,43 +45,13 @@ func globMatch(devpat string, netdevs []string, tgt set) bool {
 type ipMap map[string][]string
 
 // add adds an IP/device pairing to the map.
-func (i ipMap) add(ip, netdev string) {
-	v, ok := i[ip]
+func (im ipMap) add(ip, netdev string) {
+	v, ok := im[ip]
 	if ok {
-		i[ip] = append(v, netdev)
+		im[ip] = append(v, netdev)
 	} else {
-		i[ip] = []string{netdev}
+		im[ip] = []string{netdev}
 	}
-}
-
-// Create an ipMap for all interfaces on the system.
-func getNetworks() ipMap {
-	ipmap := make(ipMap)
-	ints, e := net.Interfaces()
-	if e != nil {
-		return ipmap
-	}
-	for _, i := range ints {
-		addrs, e := i.Addrs()
-		if e != nil {
-			continue
-		}
-		for _, a := range addrs {
-			// I HATE YOUR DOCUMENTATION
-			if a.Network() != "ip+net" {
-				continue
-			}
-			astr := a.String()
-			// We don't care about and can't use the CIDR,
-			// but we want the IP address.
-			ip, _, e := net.ParseCIDR(astr)
-			if e != nil {
-				continue
-			}
-			ipmap.add(ip.String(), i.Name)
-		}
-	}
-	return ipmap
 }
 
 // ipMatch is given an IP address (or a potential one) and finds it
@@ -200,7 +170,6 @@ func expandDevList(devices []string, oldst Stats, exlist []string) []string {
 	nk := make(set)
 
 	devs := oldst.members()
-	ipmap := getNetworks()
 
 	// Try multiple strategies to find network devices for each
 	// command line argument.
@@ -222,11 +191,12 @@ func expandDevList(devices []string, oldst Stats, exlist []string) []string {
 		//
 		// We deliberately start out with our special magic
 		// matches.
-		if matchMe(k, ipmap, nk) || matchNetNames(k, ipmap, nk) ||
+		if matchMe(k, netinfo.ipmap, nk) ||
+			matchNetNames(k, netinfo.ipmap, nk) ||
 			globMatch(k, devs, nk) ||
-			ipMatch(k, ipmap, nk) ||
-			cidrIPMatch(k, ipmap, nk) ||
-			globIPMatch(k, ipmap, nk) {
+			ipMatch(k, netinfo.ipmap, nk) ||
+			cidrIPMatch(k, netinfo.ipmap, nk) ||
+			globIPMatch(k, netinfo.ipmap, nk) {
 			continue
 		}
 

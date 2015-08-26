@@ -18,7 +18,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"sort"
 	"strconv"
@@ -58,6 +57,17 @@ func (s set) isin(name string) bool {
 	_, ok := s[name]
 	return ok
 }
+
+// netinfo is our central point for network interface information
+// it is filled in setupNetinfo(), which is system-specific.
+type netInfo struct {
+	ipmap        ipMap
+	ifaces       []string
+	loopbacks    set
+	pointtopoint set
+}
+
+var netinfo netInfo
 
 //
 //
@@ -183,9 +193,6 @@ const (
 	HMS = "15:04:05"
 )
 
-// network devices that are loopback devices.
-var loopbacks set
-
 var showTimestamp bool
 var showZero bool
 var incLo bool
@@ -213,19 +220,6 @@ func printDelta(devname string, dt DevDelta) {
 		float64(dt.TPackets)/persec)
 }
 
-func setupLoopbacks() {
-	loopbacks = make(set)
-	ints, e := net.Interfaces()
-	if e != nil {
-		return
-	}
-	for idx := range ints {
-		if (ints[idx].Flags & net.FlagLoopback) > 0 {
-			loopbacks.add(ints[idx].Name)
-		}
-	}
-}
-
 func processLoop(devices []string, report bool, exlist []string) {
 	var keys []string
 
@@ -234,9 +228,6 @@ func processLoop(devices []string, report bool, exlist []string) {
 	if e != nil {
 		log.Fatal("error on initial filling: ", e)
 	}
-
-	// We assume that loopback devices do not appear dynamically.
-	setupLoopbacks()
 
 	excludes := make(set)
 	excludes.addlist(exlist)
@@ -257,7 +248,7 @@ func processLoop(devices []string, report bool, exlist []string) {
 		keys = make([]string, 0, len(oldst))
 		for k, v := range oldst {
 			if (v.RBytes == 0) ||
-				(!incLo && loopbacks.isin(k)) ||
+				(!incLo && netinfo.loopbacks.isin(k)) ||
 				excludes.isin(k) {
 				continue
 			}
@@ -303,7 +294,7 @@ func processLoop(devices []string, report bool, exlist []string) {
 		}
 
 		for _, k := range keys {
-			if !incLo && loopbacks.isin(k) {
+			if !incLo && netinfo.loopbacks.isin(k) {
 				continue
 			}
 			if excludes.isin(k) {
@@ -390,17 +381,22 @@ func main() {
 		incLo = true
 	}
 
+	// We assume that loopbacks and point to point devices don't
+	// appear dynamically. This is the best we can do for reasons.
+	netinfo.ipmap = make(ipMap)
+	netinfo.loopbacks = make(set)
+	netinfo.pointtopoint = make(set)
+	e := setupNetinfo()
+	if e != nil {
+		log.Fatal("error on network info setup: ", e)
+	}
+
 	exlist := strings.Split(exclude, ",")
 	// TODO: all of this hackery around various sorts of
 	// exclusions is a code smell.
 	if noPtP {
-		ints, err := net.Interfaces()
-		if err == nil {
-			for _, int := range ints {
-				if (int.Flags & net.FlagPointToPoint) > 0 {
-					exlist = append(exlist, int.Name)
-				}
-			}
+		for _, iname := range netinfo.pointtopoint.members() {
+			exlist = append(exlist, iname)
 		}
 	}
 

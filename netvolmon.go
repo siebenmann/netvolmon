@@ -197,6 +197,7 @@ var showTimestamp bool
 var showZero bool
 var incLo bool
 var duration time.Duration
+var blankline bool
 
 var bwUnits = "MB/s"
 var bwDiv = mB
@@ -293,6 +294,7 @@ func processLoop(devices []string, report bool, exlist []string) {
 			keys = dt.members()
 		}
 
+		reported := false
 		for _, k := range keys {
 			if !incLo && netinfo.loopbacks.isin(k) {
 				continue
@@ -312,7 +314,14 @@ func processLoop(devices []string, report bool, exlist []string) {
 			if !showZero && v.RBytes == 0 && v.TBytes == 0 {
 				continue
 			}
+			reported = true
 			printDelta(k, v)
+		}
+		// We only produce a blank line if we actually reported
+		// on some network traffic this time around. Doing it
+		// any other way is far too annoying.
+		if reported && blankline {
+			fmt.Println()
 		}
 		oldst = newst
 	}
@@ -325,7 +334,7 @@ Network device names can include shell glob patterns (eg 'enp*f*'),
 interface IP addresses, wildcarded IP addresses (eg '127.*'), CIDR
 netblocks (match any interface with an address in the netblock) and a
 few special names like 'me' (which tries to do an IP address lookup on
-the hostname and go from there).
+the hostname and go from there). Use -L to see the list of special names.
 `
 
 func usage() {
@@ -336,11 +345,42 @@ func usage() {
 	fmt.Fprintf(os.Stderr, noteStr)
 }
 
+func listSpecials() {
+	fmt.Printf("Supported special device names:\n")
+	fmt.Printf("   %-10s   device(s) with IP address of my hostname\n", "me")
+
+	// AUGH.
+	// I hate the lack of generics here and how Go does not have
+	// a 'get the keys of an arbitrary map' operation.
+	keys := make([]string, len(cslabNetNames))
+	i := 0
+	for k := range cslabNetNames {
+		keys[i] = k
+		i++
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Printf("   %-10s   device(s) with %s\n", k, cslabNetNames[k])
+	}
+
+	keys = make([]string, len(cslabMultiNames))
+	i = 0
+	for k := range cslabMultiNames {
+		keys[i] = k
+		i++
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Printf("   %-10s   device(s) matching %s\n", k, strings.Join(cslabMultiNames[k], " or "))
+	}
+}
+
 func main() {
 	var usekb bool
 	var report bool
 	var exclude string
 	var noPtP bool
+	var specials bool
 
 	log.SetPrefix("netvolmon: ")
 	log.SetFlags(0)
@@ -351,6 +391,9 @@ func main() {
 	flag.DurationVar(&duration, "d", time.Second, "`delay` between reports")
 	flag.BoolVar(&usekb, "k", false, "report in KB/s instead of MB/s")
 	flag.BoolVar(&report, "R", false, "just report what devices we'd monitor")
+	flag.BoolVar(&specials, "L", false, "just list available special names")
+	flag.BoolVar(&blankline, "b", false, "print a blank line between successive reports")
+
 	// TODO: this is kind of a hack.
 	flag.StringVar(&exclude, "x", "", "`devices` to specifically exclude (comma-separated)")
 	flag.BoolVar(&noPtP, "P", false, "exclude all point to point devices")
@@ -361,6 +404,11 @@ func main() {
 	if usekb {
 		bwUnits = "KB/s"
 		bwDiv = kB
+	}
+
+	if specials {
+		listSpecials()
+		os.Exit(0)
 	}
 
 	// Very special hack: a single trailing integer argument is

@@ -1,0 +1,23 @@
+Netvolmon is a Go program that reports on basic network volume
+statistics (RX/TX bandwidth and packets, both per second) for one or
+more network devices. It runs on Linux and Solaris and can timestamp
+its output and do a few other tricks; see its usage information for
+details.
+
+There are many programs that do things like this (for example,
+nicstat). This one is mine. It may be of interest as an example
+of calling getifaddrs() from Go and using my (go-)kstat package[1]
+to get access to Solaris/Illumos/OmniOS kstat(s).
+
+(If history is any guide, it's going to grow various baroque options
+over time.)
+
+Chris Siebenmann
+https://github.com/siebenmann/netvolmon/
+https://utcc.utoronto.ca/~cks/space/blog/
+
+Copyright: GPL v3
+
+August 26 2016
+
+[1: https://github.com/siebenmann/go-kstat ]

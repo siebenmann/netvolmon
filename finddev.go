@@ -18,6 +18,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"sort"
 
 	"github.com/ryanuber/go-glob"
 )
@@ -42,6 +43,9 @@ func globMatch(devpat string, netdevs []string, tgt set) bool {
 // ipMap maps IP addresses to *arrays* of network devices, because an
 // IP address can be attached to more than one network device (yes,
 // really).
+//
+// (We also abuse this as a generic string->[]string map, but pay no
+// attention to the code smell in the corner.)
 type ipMap map[string][]string
 
 // add adds an IP/device pairing to the map.
@@ -52,6 +56,19 @@ func (im ipMap) add(ip, netdev string) {
 	} else {
 		im[ip] = []string{netdev}
 	}
+}
+
+// members returns a (sorted) list of the keys of an ipMap, by analogy
+// to the same operation on sets.
+func (im ipMap) members() []string {
+	keys := make([]string, len(im))
+	i := 0
+	for k := range im {
+		keys[i] = k
+		i++
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // ipMatch is given an IP address (or a potential one) and finds it

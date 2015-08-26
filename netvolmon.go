@@ -3,10 +3,8 @@
 // numbers, for however many network devices you want to at once.
 // Reports can be in MB/s or KB/s and can include timestamps. Network
 // devices can be 'all active devices', specific devices, or wildcards
-// (because Chris is lazy).
-//
-// BUGS: Linux only, because so far there doesn't seem to be Golang
-// support for Solaris/Illumos kstat(s).
+// (because Chris is lazy), and we also support some special names too
+// just because.
 //
 // Author: Chris Siebenmann
 //
@@ -327,6 +325,40 @@ func processLoop(devices []string, report bool, exlist []string) {
 	}
 }
 
+//
+// Report on what IP addresses various network devices have. We abuse
+// an ipMap to do this, because an ipMap is a generic string->[]string
+// mapping.
+//
+// We respect -l and -P because that seems at least vaguely useful, but
+// we don't respect -x.
+func reportWhat(ipv6too, noPtP bool) {
+	m1 := make(ipMap)
+	for ip, ifaces := range netinfo.ipmap {
+		if !ipv6too && strings.ContainsAny(ip, ":") {
+			continue
+		}
+		for _, iname := range ifaces {
+			if !incLo && netinfo.loopbacks.isin(iname) {
+				continue
+			}
+			if noPtP && netinfo.pointtopoint.isin(iname) {
+				continue
+			}
+			m1.add(iname, ip)
+		}
+	}
+	// list is pre-sorted
+	ilist := m1.members()
+	for _, iname := range ilist {
+		ips := m1[iname]
+		sort.Strings(ips)
+		fmt.Printf("%-8s  %s\n", iname, strings.Join(ips, " "))
+	}
+}
+
+//
+
 var noteStr = `
 Default is to report on all network devices that have received traffic.
 
@@ -370,33 +402,67 @@ func listSpecials() {
 		i++
 	}
 	sort.Strings(keys)
+
+	// ... what? Okay, sure, at least report it rather than being
+	// totally silent and looking like we failed.
+	if len(keys) == 0 {
+		fmt.Printf("No network devices with IP addresses detected\n")
+		return
+	}
+
 	for _, k := range keys {
 		fmt.Printf("   %-10s   device(s) matching %s\n", k, strings.Join(cslabMultiNames[k], " or "))
 	}
 }
 
+// how many boolean arguments are set. this is used to check for conflicting
+// (boolean) options.
+func howmany(bools ...bool) int {
+	i := 0
+	for _, v := range bools {
+		if v {
+			i++
+		}
+	}
+	return i
+}
+
+//
 func main() {
 	var usekb bool
 	var report bool
 	var exclude string
 	var noPtP bool
 	var specials bool
+	var reportwhat, ipv6too bool
 
+	// TODO: do better as far as setting the program name goes.
+	// This is low rent hardcoding.
 	log.SetPrefix("netvolmon: ")
 	log.SetFlags(0)
 
+	// Flags for normal operation:
 	flag.BoolVar(&incLo, "l", false, "when reporting on everything, report on loopback too")
 	flag.BoolVar(&showTimestamp, "T", false, "include timestamps in output")
 	flag.BoolVar(&showZero, "z", false, "show devices even if they have no activity this period")
 	flag.DurationVar(&duration, "d", time.Second, "`delay` between reports")
 	flag.BoolVar(&usekb, "k", false, "report in KB/s instead of MB/s")
-	flag.BoolVar(&report, "R", false, "just report what devices we'd monitor")
-	flag.BoolVar(&specials, "L", false, "just list available special names")
 	flag.BoolVar(&blankline, "b", false, "print a blank line between successive reports")
 
 	// TODO: this is kind of a hack.
 	flag.StringVar(&exclude, "x", "", "`devices` to specifically exclude (comma-separated)")
 	flag.BoolVar(&noPtP, "P", false, "exclude all point to point devices")
+
+	// Special reporting flags:
+	flag.BoolVar(&report, "R", false, "just report what devices we'd monitor")
+	flag.BoolVar(&specials, "L", false, "just list available special names")
+	flag.BoolVar(&reportwhat, "W", false, "just report what IPs each interface has")
+	// Excluding IPv6 addresses by default makes part of me wince, but
+	// for my machines it's by far the most convenient case. Arguably
+	// we only really want to exclude fe80: IPv6 addresses, because
+	// those things are everywhere and they clutter up -W's display
+	// badly.
+	flag.BoolVar(&ipv6too, "6", false, "include IPv6 IPs in -W")
 
 	flag.Usage = usage
 	flag.Parse()
@@ -406,13 +472,28 @@ func main() {
 		bwDiv = kB
 	}
 
+	// This is a low-rent way of checking for conflicting arguments
+	if howmany(specials, reportwhat, report, showTimestamp || showZero || usekb || blankline) > 1 {
+		log.Fatal("conflicting command line arguments; see -h")
+	}
+	// -R is often given with command line arguments for obvious
+	// reasons, but neither -L nor -W respects them at all.
+	if flag.NArg() > 0 && (specials || reportwhat) {
+		log.Fatal("-L or -W given with command line arguments")
+	}
+
+	// We deliberately don't try to go any further (eg to network
+	// interface acquisition) with -L. Report immediately and stop.
 	if specials {
 		listSpecials()
 		os.Exit(0)
 	}
 
+	//
 	// Very special hack: a single trailing integer argument is
 	// interpreted as a duration in seconds.
+	//
+	// We check for doing both -d and this and usually error out.
 	args := flag.Args()
 	if len(args) > 0 {
 		l := len(args) - 1
@@ -420,17 +501,33 @@ func main() {
 		// duration via the #-of-bits argument here.
 		dur, ok := strconv.ParseUint(args[l], 0, 64)
 		if ok == nil && dur > 0 {
-			duration = time.Second * time.Duration(dur)
+			nd := time.Second * time.Duration(dur)
+			// trivia root: we'll accept '-d 20s ... 20', just
+			// because. knock yourself out.
+			if duration != time.Second && duration != nd {
+				log.Fatal("given both -d and a trailing 'seconds' argument")
+			}
+			duration = nd
 			args = args[:l]
 		}
 	}
 
+	// If you gave one or more command line arguments as the
+	// devices to display, then we assume you want to include a
+	// loopback interface if it matches one of them.
 	if len(args) > 0 {
 		incLo = true
 	}
 
-	// We assume that loopbacks and point to point devices don't
-	// appear dynamically. This is the best we can do for reasons.
+	// Load the network interface information now. Because we only
+	// load it once, we're implicitly assuming that loopback and
+	// point to point devices don't appear dynamically. This is
+	// the best we can do for reasons, although it's actually wrong
+	// (especially for PtP devices).
+	//
+	// We deliberately defer this until after all argument
+	// checking has been done so that argument errors take
+	// priority over problems here.
 	netinfo.ipmap = make(ipMap)
 	netinfo.loopbacks = make(set)
 	netinfo.pointtopoint = make(set)
@@ -438,6 +535,16 @@ func main() {
 	if e != nil {
 		log.Fatal("error on network info setup: ", e)
 	}
+
+	// With device information loaded, we can now report on
+	// interface->IP mappings.
+	if reportwhat {
+		reportWhat(ipv6too, noPtP)
+		os.Exit(0)
+	}
+
+	// We are go for reporting liftoff (or at least for -R
+	// reporting)
 
 	exlist := strings.Split(exclude, ",")
 	// TODO: all of this hackery around various sorts of

@@ -198,13 +198,13 @@ var duration time.Duration
 var blankline bool
 
 var bwUnits = "MB/s"
-var bwDiv = mB
+var bwDiv float64 = mB
 
 // printDelta prints the per-second rates for a given device given its
 // DevDelta. Bandwidth is scaled.
 func printDelta(devname string, dt DevDelta) {
 	persec := float64(dt.Delta) / float64(time.Second)
-	persecbytes := persec * float64(bwDiv)
+	persecbytes := persec * bwDiv
 
 	if showTimestamp {
 		fmt.Printf("%-8s %8s ", devname, dt.When.Format(HMS))

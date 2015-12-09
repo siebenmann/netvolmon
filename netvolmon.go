@@ -446,7 +446,7 @@ func main() {
 	flag.BoolVar(&showTimestamp, "T", false, "include timestamps in output")
 	flag.BoolVar(&showZero, "z", false, "show devices even if they have no activity this period")
 	flag.DurationVar(&duration, "d", time.Second, "`delay` between reports")
-	flag.BoolVar(&usekb, "k", false, "report in KB/s instead of MB/s")
+	flag.BoolVar(&usekb, "k", false, "report bandwidth in KB/s instead of MB/s")
 	flag.BoolVar(&blankline, "b", false, "print a blank line between successive reports")
 
 	// TODO: this is kind of a hack.

@@ -16,6 +16,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -185,6 +186,7 @@ func genDeltas(oldinfo, newinfo Stats) Deltas {
 const (
 	kB = 1024
 	mB = kB * 1024
+	gB = mB * 1024
 
 	// HMS is our timestamp format for -T. It omits the date for space.
 	// This is not expected to usually matter.
@@ -200,11 +202,31 @@ var blankline bool
 var bwUnits = "MB/s"
 var bwDiv float64 = mB
 
+// getBwDiv is given the raw bytes-per-second figure and returns the
+// correct bandwidth divisor for it and a label string.
+// If an explicit bandwidth unit is already set, it is used. Otherwise
+// we base the decision on the b-p-s value, switching over to the next
+// unit up at 2,000.
+func getBwDiv(bps float64) (float64, string) {
+	if bwUnits != "" {
+		return bwDiv, bwUnits
+	}
+	switch {
+	case bps >= (2 * gB):
+		return gB, "GB/s"
+	case bps >= (2 * mB):
+		return mB, "MB/s"
+	default:
+		return kB, "KB/s"
+	}
+}
+
 // printDelta prints the per-second rates for a given device given its
 // DevDelta. Bandwidth is scaled.
 func printDelta(devname string, dt DevDelta) {
 	persec := float64(dt.Delta) / float64(time.Second)
-	persecbytes := persec * bwDiv
+	bwD, bwU := getBwDiv(math.Max(float64(dt.RBytes), float64(dt.TBytes)) / persec)
+	persecbytes := persec * bwD
 
 	if showTimestamp {
 		fmt.Printf("%-8s %8s ", devname, dt.When.Format(HMS))
@@ -214,7 +236,7 @@ func printDelta(devname string, dt DevDelta) {
 	fmt.Printf("%6.2f RX %6.2f TX (%s)   packets/sec: %5.0f RX %5.0f TX\n",
 		float64(dt.RBytes)/persecbytes,
 		float64(dt.TBytes)/persecbytes,
-		bwUnits,
+		bwU,
 		float64(dt.RPackets)/persec,
 		float64(dt.TPackets)/persec)
 }
@@ -429,7 +451,7 @@ func howmany(bools ...bool) int {
 
 //
 func main() {
-	var usekb bool
+	var usekb, useadaptive bool
 	var report bool
 	var exclude string
 	var noPtP bool
@@ -448,6 +470,7 @@ func main() {
 	flag.DurationVar(&duration, "d", time.Second, "`delay` between reports")
 	flag.BoolVar(&usekb, "k", false, "report bandwidth in KB/s instead of MB/s")
 	flag.BoolVar(&blankline, "b", false, "print a blank line between successive reports")
+	flag.BoolVar(&useadaptive, "a", false, "adapt bandwidth units to network volume")
 
 	// TODO: this is kind of a hack.
 	flag.StringVar(&exclude, "x", "", "`devices` to specifically exclude (comma-separated)")
@@ -467,9 +490,16 @@ func main() {
 	flag.Usage = usage
 	flag.Parse()
 
+	if usekb && useadaptive {
+		log.Fatal("conflicting command line arguments; see -h")
+	}
 	if usekb {
 		bwUnits = "KB/s"
 		bwDiv = kB
+	}
+	if useadaptive {
+		bwUnits = ""
+		bwDiv = 0
 	}
 
 	// This is a low-rent way of checking for conflicting arguments

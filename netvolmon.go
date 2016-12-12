@@ -580,9 +580,7 @@ func main() {
 	// TODO: all of this hackery around various sorts of
 	// exclusions is a code smell.
 	if noPtP {
-		for _, iname := range netinfo.pointtopoint.members() {
-			exlist = append(exlist, iname)
-		}
+		exlist = append(exlist, netinfo.pointtopoint.members()...)
 	}
 
 	processLoop(args, report, exlist)

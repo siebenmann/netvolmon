@@ -14,7 +14,9 @@ var cslabNetNames = map[string]string{
 	"iscsi1": "192.168.101.0/24",
 	"iscsi2": "192.168.102.0/24",
 
-	"red": "172.17.0.0/16",
+	"red":  "172.17.0.0/16",
+	"vpn":  "172.29.0.0/16",
+	"wifi": "172.31.0.0/16",
 }
 
 // abstract name to specific names, which must be in cslabNetNames.
